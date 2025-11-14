@@ -18,7 +18,7 @@ st.set_page_config(
 )
 
 # Backend URL (env var or default)
-BACKEND = os.environ.get("BACKEND_URL", "https://business-card-scanner-backend.onrender.com")  
+BACKEND = os.environ.get("BACKEND_URL", "https://business-card-scanner-backend.onrender.com")
 
 st.title("📇 Business Card OCR → MongoDB")
 st.write("Upload → Extract OCR → Store → Edit → Download")
@@ -111,6 +111,9 @@ with tab1:
                     if "data" in res:
                         st.success("Inserted Successfully!")
                         card = res["data"]
+                        # hide backend-only fields if present
+                        if "field_validations" in card:
+                            del card["field_validations"]
                         df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
                         st.dataframe(df, use_container_width=True)
                         st.download_button(
@@ -154,6 +157,7 @@ with tab1:
             website = c2.text_input("Website")
             address = st.text_area("Address")
             social_links = st.text_input("Social links (comma separated)")
+            more_details = st.text_area("More details (leave empty to fill later)")  # allow user to add/pre-fill
             additional_notes = st.text_area("Notes / extra info")
             submitted = st.form_submit_button("📤 Create Card (manual)")
 
@@ -167,6 +171,7 @@ with tab1:
                 "website": website,
                 "address": address,
                 "social_links": social_links,
+                "more_details": more_details or "",  # include if user provided
                 "additional_notes": additional_notes,
             }
             with st.spinner("Saving..."):
@@ -182,13 +187,15 @@ with tab1:
                     if "data" in res:
                         st.success("Inserted Successfully!")
                         card = res["data"]
+                        if "field_validations" in card:
+                            del card["field_validations"]
                         df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
                         st.dataframe(df, use_container_width=True)
                         st.download_button(
                             "📥 Download as Excel",
                             to_excel_bytes(df),
                             "business_card_manual.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            mime="application/vnd.openxmlformats-officedocument-spreadsheetml.sheet"
                         )
                     else:
                         st.warning("Created but no data returned.")
@@ -215,6 +222,9 @@ with tab2:
         # Fetch data to calculate download content
         data = fetch_all_cards()
         if data:
+            # Remove backend-only field_validations from download data
+            for d in data:
+                d.pop("field_validations", None)
             df_all_for_download = pd.DataFrame(data)
             # convert lists to CSV strings for Excel
             for col in ["phone_numbers", "social_links"]:
@@ -224,7 +234,7 @@ with tab2:
                 "📥 Download All as Excel",
                 to_excel_bytes(df_all_for_download.drop(columns=["_id"], errors="ignore")),
                 "all_business_cards.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                mime="application/vnd.openxmlformats-officedocument-spreadsheetml.sheet"
             )
         else:
             st.write("")  # placeholder for alignment
@@ -237,10 +247,14 @@ with tab2:
         st.warning("No cards found.")
     else:
         # Normalize into DataFrame for editing/display
+        # Remove field_validations from each record to avoid showing it
+        for d in data:
+            d.pop("field_validations", None)
+
         df_all = pd.DataFrame(data)
 
         # Ensure all expected columns exist (prevents editor crashing)
-        expected_cols = ["_id", "name", "designation", "company", "phone_numbers", "email", "website", "address", "social_links", "additional_notes", "created_at", "edited_at"]
+        expected_cols = ["_id", "name", "designation", "company", "phone_numbers", "email", "website", "address", "social_links", "more_details", "additional_notes", "created_at", "edited_at"]
         for c in expected_cols:
             if c not in df_all.columns:
                 df_all[c] = ""
@@ -282,8 +296,6 @@ with tab2:
 
         # Helper: open an edit modal for a selected row (manual drawer)
         def open_edit_modal(row):
-            # row MUST contain the original _id field (so pass df_all row to this fn)
-            # We create a modal where the user can edit and save or delete the row.
             with st.modal(f"Edit card — {_truncate_name(row.get('name', ''))}", clear_on_submit=False):
                 c1, c2 = st.columns(2)
                 name_m = c1.text_input("Full name", value=row.get("name", ""))
@@ -294,6 +306,7 @@ with tab2:
                 website_m = c2.text_input("Website", value=row.get("website", ""))
                 address_m = st.text_area("Address", value=row.get("address", ""))
                 social_m = st.text_input("Social links (comma separated)", value=list_to_csv_str(row.get("social_links", "")))
+                more_m = st.text_area("More details", value=row.get("more_details", ""))
                 notes_m = st.text_area("Notes", value=row.get("additional_notes", ""))
                 col_ok, col_del = st.columns([1, 1])
                 with col_ok:
@@ -310,6 +323,7 @@ with tab2:
                         "website": website_m,
                         "address": address_m,
                         "social_links": social_m,
+                        "more_details": more_m,
                         "additional_notes": notes_m,
                     }
                     try:
