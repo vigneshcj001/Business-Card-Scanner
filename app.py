@@ -17,6 +17,10 @@ st.set_page_config(
     layout="wide",
 )
 
+# Ensure a refresh counter exists in session_state (mutating this triggers a rerun)
+if "refresh_counter" not in st.session_state:
+    st.session_state["refresh_counter"] = 0
+
 # Backend URL (env var or default)
 BACKEND = os.environ.get("BACKEND_URL", "https://business-card-scanner-backend.onrender.com")
 
@@ -395,10 +399,10 @@ with tab2:
                             success, msg = patch_card(id_str, payload)
                             if success:
                                 st.success("Updated")
-                                # close drawer and refresh
+                                # close drawer and trigger rerun via session_state mutation
                                 st.session_state["drawer_open"] = False
                                 st.session_state["drawer_row"] = None
-                                st.experimental_rerun()
+                                st.session_state["refresh_counter"] = st.session_state.get("refresh_counter", 0) + 1
                             else:
                                 st.error(f"Failed to update: {msg}")
 
@@ -409,7 +413,7 @@ with tab2:
                                 st.success("Deleted")
                                 st.session_state["drawer_open"] = False
                                 st.session_state["drawer_row"] = None
-                                st.experimental_rerun()
+                                st.session_state["refresh_counter"] = st.session_state.get("refresh_counter", 0) + 1
                             else:
                                 st.error(f"Failed to delete: {msg}")
 
@@ -417,7 +421,7 @@ with tab2:
                         if st.button("Close drawer", key=f"drawer-close-{id_str}"):
                             st.session_state["drawer_open"] = False
                             st.session_state["drawer_row"] = None
-                            st.experimental_rerun()
+                            st.session_state["refresh_counter"] = st.session_state.get("refresh_counter", 0) + 1
 
         # When Save Changes clicked, iterate rows and diff against original and send PATCHs (uses patch_card)
         if save_clicked:
@@ -450,10 +454,8 @@ with tab2:
 
             if updates > 0:
                 st.success(f"✅ Updated {updates} card(s). Refreshing...")
-                try:
-                    st.experimental_rerun()
-                except Exception:
-                    pass
+                # trigger rerun via session_state mutation
+                st.session_state["refresh_counter"] = st.session_state.get("refresh_counter", 0) + 1
             else:
                 if problems == 0:
                     st.info("No changes detected.")
