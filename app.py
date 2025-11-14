@@ -79,6 +79,8 @@ def patch_card(card_id: str, payload: dict, timeout: int = 30) -> Tuple[bool, st
     Unified helper to PATCH a single card. Returns (success, message).
     """
     try:
+        # ensure id is string
+        card_id = str(card_id)
         r = requests.patch(f"{BACKEND}/update_card/{card_id}", json=_clean_payload_for_backend(payload), timeout=timeout)
         if r.status_code in (200, 201):
             return True, "Updated"
@@ -93,6 +95,7 @@ def patch_card(card_id: str, payload: dict, timeout: int = 30) -> Tuple[bool, st
 
 def delete_card(card_id: str, timeout: int = 30) -> Tuple[bool, str]:
     try:
+        card_id = str(card_id)
         r = requests.delete(f"{BACKEND}/delete_card/{card_id}", timeout=timeout)
         if r.status_code in (200, 204):
             return True, "Deleted"
@@ -323,54 +326,14 @@ with tab2:
                 num_rows="fixed",
             )
 
-        # --- Replacement for modal: expander-based editor + selectbox row picker ---
-        def open_edit_drawer_expander(row):
-            """
-            Render an edit form inside an expander. Uses the same patch_card / delete_card helpers
-            so drawer Save and top Save use identical logic.
-            """
-            title = f"Edit card — {_truncate_name(row.get('name', ''))}"
-            with st.expander(title, expanded=True):
-                c1, c2 = st.columns(2)
-                name_m = c1.text_input("Full name", value=row.get("name", ""), key=f"name-{row.get('_id')}")
-                designation_m = c2.text_input("Designation", value=row.get("designation", ""), key=f"desig-{row.get('_id')}")
-                company_m = c1.text_input("Company", value=row.get("company", ""), key=f"company-{row.get('_id')}")
-                phones_m = c2.text_input("Phone numbers (comma separated)", value=list_to_csv_str(row.get("phone_numbers", "")), key=f"phones-{row.get('_id')}")
-                email_m = c1.text_input("Email", value=row.get("email", ""), key=f"email-{row.get('_id')}")
-                website_m = c2.text_input("Website", value=row.get("website", ""), key=f"website-{row.get('_id')}")
-                address_m = st.text_area("Address", value=row.get("address", ""), key=f"address-{row.get('_id')}")
-                social_m = st.text_input("Social links (comma separated)", value=list_to_csv_str(row.get("social_links", "")), key=f"social-{row.get('_id')}")
-                more_m = st.text_area("More details", value=row.get("more_details", ""), key=f"more-{row.get('_id')}")
-                notes_m = st.text_area("Notes", value=row.get("additional_notes", ""), key=f"notes-{row.get('_id')}")
-                col_ok, col_del = st.columns([1, 1])
-                with col_ok:
-                    if st.button("Save changes", key=f"drawer-save-{row.get('_id')}"):
-                        payload = {
-                            "name": name_m,
-                            "designation": designation_m,
-                            "company": company_m,
-                            "phone_numbers": phones_m,
-                            "email": email_m,
-                            "website": website_m,
-                            "address": address_m,
-                            "social_links": social_m,
-                            "more_details": more_m,
-                            "additional_notes": notes_m,
-                        }
-                        success, msg = patch_card(row.get("_id"), payload)
-                        if success:
-                            st.success("Updated")
-                            st.experimental_rerun()
-                        else:
-                            st.error(f"Failed to update: {msg}")
-                with col_del:
-                    if st.button("🗑 Delete card", key=f"drawer-del-{row.get('_id')}"):
-                        success, msg = delete_card(row.get("_id"))
-                        if success:
-                            st.success("Deleted")
-                            st.experimental_rerun()
-                        else:
-                            st.error(f"Failed to delete: {msg}")
+        # -----------------------
+        # Persisted drawer implementation using session_state
+        # -----------------------
+        # Ensure session state defaults
+        if "drawer_open" not in st.session_state:
+            st.session_state["drawer_open"] = False
+        if "drawer_row" not in st.session_state:
+            st.session_state["drawer_row"] = None
 
         # Build friendly options list for selectbox
         options = []
@@ -380,10 +343,81 @@ with tab2:
 
         selected = st.selectbox("Select a row to edit", options, index=0, help="Pick a contact to open the edit drawer")
 
+        # When user clicks to open, persist the chosen row index in session_state
         if st.button("Open selected row in drawer"):
             sel_idx = int(selected.split("—", 1)[0].strip())
-            row = df_all.iloc[sel_idx].to_dict()
-            open_edit_drawer_expander(row)
+            st.session_state["drawer_open"] = True
+            st.session_state["drawer_row"] = sel_idx
+
+        # If drawer_open, render the expander every run (so its buttons can be clicked)
+        if st.session_state.get("drawer_open") and st.session_state.get("drawer_row") is not None:
+            sel_idx = st.session_state["drawer_row"]
+            # guard in case data changed length
+            if sel_idx < 0 or sel_idx >= len(df_all):
+                st.warning("Selected row is no longer available.")
+                st.session_state["drawer_open"] = False
+                st.session_state["drawer_row"] = None
+            else:
+                row = df_all.iloc[sel_idx].to_dict()
+
+                # Use a string id for keys and backend calls
+                id_str = str(row.get("_id"))
+
+                title = f"Edit card — {_truncate_name(row.get('name', ''))}"
+                with st.expander(title, expanded=True):
+                    c1, c2 = st.columns(2)
+                    name_m = c1.text_input("Full name", value=row.get("name", ""), key=f"name-{id_str}")
+                    designation_m = c2.text_input("Designation", value=row.get("designation", ""), key=f"desig-{id_str}")
+                    company_m = c1.text_input("Company", value=row.get("company", ""), key=f"company-{id_str}")
+                    phones_m = c2.text_input("Phone numbers (comma separated)", value=list_to_csv_str(row.get("phone_numbers", "")), key=f"phones-{id_str}")
+                    email_m = c1.text_input("Email", value=row.get("email", ""), key=f"email-{id_str}")
+                    website_m = c2.text_input("Website", value=row.get("website", ""), key=f"website-{id_str}")
+                    address_m = st.text_area("Address", value=row.get("address", ""), key=f"address-{id_str}")
+                    social_m = st.text_input("Social links (comma separated)", value=list_to_csv_str(row.get("social_links", "")), key=f"social-{id_str}")
+                    more_m = st.text_area("More details", value=row.get("more_details", ""), key=f"more-{id_str}")
+                    notes_m = st.text_area("Notes", value=row.get("additional_notes", ""), key=f"notes-{id_str}")
+
+                    col_ok, col_del, col_close = st.columns([1,1,1])
+                    with col_ok:
+                        if st.button("Save changes", key=f"drawer-save-{id_str}"):
+                            payload = {
+                                "name": name_m,
+                                "designation": designation_m,
+                                "company": company_m,
+                                "phone_numbers": phones_m,
+                                "email": email_m,
+                                "website": website_m,
+                                "address": address_m,
+                                "social_links": social_m,
+                                "more_details": more_m,
+                                "additional_notes": notes_m,
+                            }
+                            success, msg = patch_card(id_str, payload)
+                            if success:
+                                st.success("Updated")
+                                # close drawer and refresh
+                                st.session_state["drawer_open"] = False
+                                st.session_state["drawer_row"] = None
+                                st.experimental_rerun()
+                            else:
+                                st.error(f"Failed to update: {msg}")
+
+                    with col_del:
+                        if st.button("🗑 Delete card", key=f"drawer-del-{id_str}"):
+                            success, msg = delete_card(id_str)
+                            if success:
+                                st.success("Deleted")
+                                st.session_state["drawer_open"] = False
+                                st.session_state["drawer_row"] = None
+                                st.experimental_rerun()
+                            else:
+                                st.error(f"Failed to delete: {msg}")
+
+                    with col_close:
+                        if st.button("Close drawer", key=f"drawer-close-{id_str}"):
+                            st.session_state["drawer_open"] = False
+                            st.session_state["drawer_row"] = None
+                            st.experimental_rerun()
 
         # When Save Changes clicked, iterate rows and diff against original and send PATCHs (uses patch_card)
         if save_clicked:
