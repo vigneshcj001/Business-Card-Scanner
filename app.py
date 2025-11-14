@@ -1,7 +1,7 @@
 # app.py
 import os
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import streamlit as st
 import pandas as pd
@@ -73,6 +73,37 @@ def fetch_all_cards(timeout=20) -> List[Dict[str, Any]]:
     except Exception as e:
         st.error(f"Failed to fetch cards: {e}")
         return []
+
+def patch_card(card_id: str, payload: dict, timeout: int = 30) -> Tuple[bool, str]:
+    """
+    Unified helper to PATCH a single card. Returns (success, message).
+    """
+    try:
+        r = requests.patch(f"{BACKEND}/update_card/{card_id}", json=_clean_payload_for_backend(payload), timeout=timeout)
+        if r.status_code in (200, 201):
+            return True, "Updated"
+        else:
+            try:
+                err = r.json()
+            except Exception:
+                err = r.text
+            return False, f"Failed: {err}"
+    except Exception as e:
+        return False, str(e)
+
+def delete_card(card_id: str, timeout: int = 30) -> Tuple[bool, str]:
+    try:
+        r = requests.delete(f"{BACKEND}/delete_card/{card_id}", timeout=timeout)
+        if r.status_code in (200, 204):
+            return True, "Deleted"
+        else:
+            try:
+                err = r.json()
+            except Exception:
+                err = r.text
+            return False, f"Failed to delete: {err}"
+    except Exception as e:
+        return False, str(e)
 
 # ----------------------------
 # Layout: Tabs
@@ -293,10 +324,10 @@ with tab2:
             )
 
         # --- Replacement for modal: expander-based editor + selectbox row picker ---
-
         def open_edit_drawer_expander(row):
             """
-            Render an edit form inside an expander. `row` should be a dict containing the original `_id` and all fields.
+            Render an edit form inside an expander. Uses the same patch_card / delete_card helpers
+            so drawer Save and top Save use identical logic.
             """
             title = f"Edit card — {_truncate_name(row.get('name', ''))}"
             with st.expander(title, expanded=True):
@@ -326,24 +357,20 @@ with tab2:
                             "more_details": more_m,
                             "additional_notes": notes_m,
                         }
-                        try:
-                            r = requests.patch(f"{BACKEND}/update_card/{row.get('_id')}", json=_clean_payload_for_backend(payload), timeout=30)
-                            r.raise_for_status()
+                        success, msg = patch_card(row.get("_id"), payload)
+                        if success:
                             st.success("Updated")
                             st.experimental_rerun()
-                        except Exception as e:
-                            st.error(f"Failed to update: {e}")
+                        else:
+                            st.error(f"Failed to update: {msg}")
                 with col_del:
                     if st.button("🗑 Delete card", key=f"del-{row.get('_id')}"):
-                        try:
-                            r = requests.delete(f"{BACKEND}/delete_card/{row.get('_id')}", timeout=30)
-                            if r.status_code in (200, 204):
-                                st.success("Deleted")
-                                st.experimental_rerun()
-                            else:
-                                st.error(f"Delete failed: {r.text}")
-                        except Exception as e:
-                            st.error(f"Failed to delete: {e}")
+                        success, msg = delete_card(row.get("_id"))
+                        if success:
+                            st.success("Deleted")
+                            st.experimental_rerun()
+                        else:
+                            st.error(f"Failed to delete: {msg}")
 
         # Build friendly options list for selectbox
         options = []
@@ -358,7 +385,7 @@ with tab2:
             row = df_all.iloc[sel_idx].to_dict()
             open_edit_drawer_expander(row)
 
-        # When Save Changes clicked, iterate rows and diff against original and send PATCHs
+        # When Save Changes clicked, iterate rows and diff against original and send PATCHs (uses patch_card)
         if save_clicked:
             updates = 0
             problems = 0
@@ -380,16 +407,12 @@ with tab2:
 
                 if change_set:
                     card_id = _ids[i]   # always track correct MongoDB row
-                    try:
-                        r = requests.patch(f"{BACKEND}/update_card/{card_id}", json=change_set, timeout=30)
-                        if r.status_code in (200, 201):
-                            updates += 1
-                        else:
-                            problems += 1
-                            st.error(f"Failed to update {card_id}: {r.text}")
-                    except Exception as e:
+                    success, msg = patch_card(card_id, change_set)
+                    if success:
+                        updates += 1
+                    else:
                         problems += 1
-                        st.error(f"Failed to update {card_id}: {e}")
+                        st.error(f"Failed to update {card_id}: {msg}")
 
             if updates > 0:
                 st.success(f"✅ Updated {updates} card(s). Refreshing...")
