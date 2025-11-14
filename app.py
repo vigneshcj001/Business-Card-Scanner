@@ -112,8 +112,7 @@ with tab1:
                         st.success("Inserted Successfully!")
                         card = res["data"]
                         # hide backend-only fields if present
-                        if "field_validations" in card:
-                            del card["field_validations"]
+                        card.pop("field_validations", None)
                         df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
                         st.dataframe(df, use_container_width=True)
                         st.download_button(
@@ -157,7 +156,7 @@ with tab1:
             website = c2.text_input("Website")
             address = st.text_area("Address")
             social_links = st.text_input("Social links (comma separated)")
-            more_details = st.text_area("More details (leave empty to fill later)")  # allow user to add/pre-fill
+            more_details = st.text_area("More details (leave empty to fill later)")
             additional_notes = st.text_area("Notes / extra info")
             submitted = st.form_submit_button("📤 Create Card (manual)")
 
@@ -171,7 +170,7 @@ with tab1:
                 "website": website,
                 "address": address,
                 "social_links": social_links,
-                "more_details": more_details or "",  # include if user provided
+                "more_details": more_details or "",
                 "additional_notes": additional_notes,
             }
             with st.spinner("Saving..."):
@@ -187,15 +186,14 @@ with tab1:
                     if "data" in res:
                         st.success("Inserted Successfully!")
                         card = res["data"]
-                        if "field_validations" in card:
-                            del card["field_validations"]
+                        card.pop("field_validations", None)
                         df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
                         st.dataframe(df, use_container_width=True)
                         st.download_button(
                             "📥 Download as Excel",
                             to_excel_bytes(df),
                             "business_card_manual.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument-spreadsheetml.sheet"
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
                     else:
                         st.warning("Created but no data returned.")
@@ -234,7 +232,7 @@ with tab2:
                 "📥 Download All as Excel",
                 to_excel_bytes(df_all_for_download.drop(columns=["_id"], errors="ignore")),
                 "all_business_cards.xlsx",
-                mime="application/vnd.openxmlformats-officedocument-spreadsheetml.sheet"
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         else:
             st.write("")  # placeholder for alignment
@@ -294,64 +292,71 @@ with tab2:
                 num_rows="fixed",
             )
 
-        # Helper: open an edit modal for a selected row (manual drawer)
-        def open_edit_modal(row):
-            with st.modal(f"Edit card — {_truncate_name(row.get('name', ''))}", clear_on_submit=False):
+        # --- Replacement for modal: expander-based editor + selectbox row picker ---
+
+        def open_edit_drawer_expander(row):
+            """
+            Render an edit form inside an expander. `row` should be a dict containing the original `_id` and all fields.
+            """
+            title = f"Edit card — {_truncate_name(row.get('name', ''))}"
+            with st.expander(title, expanded=True):
                 c1, c2 = st.columns(2)
-                name_m = c1.text_input("Full name", value=row.get("name", ""))
-                designation_m = c2.text_input("Designation", value=row.get("designation", ""))
-                company_m = c1.text_input("Company", value=row.get("company", ""))
-                phones_m = c2.text_input("Phone numbers (comma separated)", value=list_to_csv_str(row.get("phone_numbers", "")))
-                email_m = c1.text_input("Email", value=row.get("email", ""))
-                website_m = c2.text_input("Website", value=row.get("website", ""))
-                address_m = st.text_area("Address", value=row.get("address", ""))
-                social_m = st.text_input("Social links (comma separated)", value=list_to_csv_str(row.get("social_links", "")))
-                more_m = st.text_area("More details", value=row.get("more_details", ""))
-                notes_m = st.text_area("Notes", value=row.get("additional_notes", ""))
+                name_m = c1.text_input("Full name", value=row.get("name", ""), key=f"name-{row.get('_id')}")
+                designation_m = c2.text_input("Designation", value=row.get("designation", ""), key=f"desig-{row.get('_id')}")
+                company_m = c1.text_input("Company", value=row.get("company", ""), key=f"company-{row.get('_id')}")
+                phones_m = c2.text_input("Phone numbers (comma separated)", value=list_to_csv_str(row.get("phone_numbers", "")), key=f"phones-{row.get('_id')}")
+                email_m = c1.text_input("Email", value=row.get("email", ""), key=f"email-{row.get('_id')}")
+                website_m = c2.text_input("Website", value=row.get("website", ""), key=f"website-{row.get('_id')}")
+                address_m = st.text_area("Address", value=row.get("address", ""), key=f"address-{row.get('_id')}")
+                social_m = st.text_input("Social links (comma separated)", value=list_to_csv_str(row.get("social_links", "")), key=f"social-{row.get('_id')}")
+                more_m = st.text_area("More details", value=row.get("more_details", ""), key=f"more-{row.get('_id')}")
+                notes_m = st.text_area("Notes", value=row.get("additional_notes", ""), key=f"notes-{row.get('_id')}")
                 col_ok, col_del = st.columns([1, 1])
                 with col_ok:
-                    ok = st.button("Save changes")
-                with col_del:
-                    delete_it = st.button("🗑 Delete card", key=f"del-{row.get('_id')}")
-                if ok:
-                    payload = {
-                        "name": name_m,
-                        "designation": designation_m,
-                        "company": company_m,
-                        "phone_numbers": phones_m,
-                        "email": email_m,
-                        "website": website_m,
-                        "address": address_m,
-                        "social_links": social_m,
-                        "more_details": more_m,
-                        "additional_notes": notes_m,
-                    }
-                    try:
-                        r = requests.patch(f"{BACKEND}/update_card/{row.get('_id')}", json=_clean_payload_for_backend(payload), timeout=30)
-                        r.raise_for_status()
-                        st.success("Updated")
-                        st.experimental_rerun()
-                    except Exception as e:
-                        st.error(f"Failed to update: {e}")
-                if delete_it:
-                    try:
-                        r = requests.delete(f"{BACKEND}/delete_card/{row.get('_id')}", timeout=30)
-                        if r.status_code in (200, 204):
-                            st.success("Deleted")
+                    if st.button("Save changes", key=f"save-{row.get('_id')}"):
+                        payload = {
+                            "name": name_m,
+                            "designation": designation_m,
+                            "company": company_m,
+                            "phone_numbers": phones_m,
+                            "email": email_m,
+                            "website": website_m,
+                            "address": address_m,
+                            "social_links": social_m,
+                            "more_details": more_m,
+                            "additional_notes": notes_m,
+                        }
+                        try:
+                            r = requests.patch(f"{BACKEND}/update_card/{row.get('_id')}", json=_clean_payload_for_backend(payload), timeout=30)
+                            r.raise_for_status()
+                            st.success("Updated")
                             st.experimental_rerun()
-                        else:
-                            st.error(f"Delete failed: {r.text}")
-                    except Exception as e:
-                        st.error(f"Failed to delete: {e}")
+                        except Exception as e:
+                            st.error(f"Failed to update: {e}")
+                with col_del:
+                    if st.button("🗑 Delete card", key=f"del-{row.get('_id')}"):
+                        try:
+                            r = requests.delete(f"{BACKEND}/delete_card/{row.get('_id')}", timeout=30)
+                            if r.status_code in (200, 204):
+                                st.success("Deleted")
+                                st.experimental_rerun()
+                            else:
+                                st.error(f"Delete failed: {r.text}")
+                        except Exception as e:
+                            st.error(f"Failed to delete: {e}")
 
-        # Provide per-row "Edit" via selection (manual)
-        st.markdown("**Tip:** Click a row number in the left-most column to open the manual edit modal (acts like a drawer).")
-        chosen_row_index = st.number_input("Open row index (0-based)", min_value=0, max_value=len(edited) - 1, value=0, step=1)
+        # Build friendly options list for selectbox
+        options = []
+        for idx, r in df_all.reset_index(drop=True).iterrows():
+            display_name = r.get("name") or r.get("company") or r.get("email") or f"Row {idx}"
+            options.append(f"{idx} — {display_name}")
+
+        selected = st.selectbox("Select a row to edit", options, index=0, help="Pick a contact to open the edit drawer")
 
         if st.button("Open selected row in drawer"):
-            # Map the chosen index back to the original df_all row so we have _id
-            row = df_all.iloc[chosen_row_index].to_dict()
-            open_edit_modal(row)
+            sel_idx = int(selected.split("—", 1)[0].strip())
+            row = df_all.iloc[sel_idx].to_dict()
+            open_edit_drawer_expander(row)
 
         # When Save Changes clicked, iterate rows and diff against original and send PATCHs
         if save_clicked:
