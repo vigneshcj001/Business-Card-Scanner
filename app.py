@@ -19,7 +19,7 @@ st.set_page_config(
 )
 
 # Backend URL (env var or default)
-BACKEND = os.environ.get("BACKEND_URL", "https://ocr-backend-rjb1.onrender.com")
+BACKEND = os.environ.get("BACKEND_URL", "https://business-card-scanner-backend.onrender.com")
 
 st.title("📇 Business Card OCR → MongoDB")
 st.write("Upload → Extract OCR → Store → Edit → Download")
