@@ -344,7 +344,7 @@ with tab2:
                 notes_m = st.text_area("Notes", value=row.get("additional_notes", ""), key=f"notes-{row.get('_id')}")
                 col_ok, col_del = st.columns([1, 1])
                 with col_ok:
-                    if st.button("Save changes", key=f"save-{row.get('_id')}"):
+                    if st.button("Save changes", key=f"drawer-save-{row.get('_id')}"):
                         payload = {
                             "name": name_m,
                             "designation": designation_m,
@@ -364,7 +364,7 @@ with tab2:
                         else:
                             st.error(f"Failed to update: {msg}")
                 with col_del:
-                    if st.button("🗑 Delete card", key=f"del-{row.get('_id')}"):
+                    if st.button("🗑 Delete card", key=f"drawer-del-{row.get('_id')}"):
                         success, msg = delete_card(row.get("_id"))
                         if success:
                             st.success("Deleted")
