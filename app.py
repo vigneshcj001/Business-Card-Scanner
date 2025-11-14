@@ -1,7 +1,6 @@
 # app.py
 import os
 import time
-import io
 from typing import Any, Dict, List
 
 import streamlit as st
@@ -19,7 +18,7 @@ st.set_page_config(
 )
 
 # Backend URL (env var or default)
-BACKEND = os.environ.get("BACKEND_URL", "https://business-card-scanner-backend.onrender.com")
+BACKEND = os.environ.get("BACKEND_URL", "https://business-card-scanner-backend.onrender.com")  
 
 st.title("📇 Business Card OCR → MongoDB")
 st.write("Upload → Extract OCR → Store → Edit → Download")
@@ -43,20 +42,6 @@ def csv_str_to_list(s: str):
         return []
     return [x.strip() for x in str(s).split(",") if x.strip()]
 
-def fetch_all_cards(timeout=30) -> List[Dict[str, Any]]:
-    try:
-        resp = requests.get(f"{BACKEND}/all_cards", timeout=timeout)
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("data", [])
-    except Exception as e:
-        st.error(f"Failed to fetch cards: {e}")
-        return []
-
-def pretty_phone_list(v):
-    # keep as simple string for display
-    return list_to_csv_str(v)
-
 def _truncate_name(s: str, length: int = 30) -> str:
     if not s:
         return ""
@@ -79,6 +64,16 @@ def _clean_payload_for_backend(payload: dict) -> dict:
             out[k] = v
     return out
 
+def fetch_all_cards(timeout=20) -> List[Dict[str, Any]]:
+    try:
+        resp = requests.get(f"{BACKEND}/all_cards", timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("data", [])
+    except Exception as e:
+        st.error(f"Failed to fetch cards: {e}")
+        return []
+
 # ----------------------------
 # Layout: Tabs
 # ----------------------------
@@ -99,11 +94,10 @@ with tab1:
         )
 
         if uploaded_file:
-            # show progress bar + spinner for UX
             progress = st.progress(10)
-            time.sleep(0.12)
-            progress.progress(35)
-            with st.spinner("Processing image with OCR..."):
+            time.sleep(0.08)
+            progress.progress(30)
+            with st.spinner("Processing image with OCR and uploading..."):
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
                 try:
                     response = requests.post(f"{BACKEND}/upload_card", files=files, timeout=120)
@@ -117,7 +111,6 @@ with tab1:
                     if "data" in res:
                         st.success("Inserted Successfully!")
                         card = res["data"]
-                        # drop _id for preview/download
                         df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
                         st.dataframe(df, use_container_width=True)
                         st.download_button(
@@ -178,7 +171,7 @@ with tab1:
             }
             with st.spinner("Saving..."):
                 try:
-                    r = requests.post(f"{BACKEND}/create_card", json=payload, timeout=30)
+                    r = requests.post(f"{BACKEND}/create_card", json=_clean_payload_for_backend(payload), timeout=30)
                     r.raise_for_status()
                 except Exception as e:
                     st.error(f"Failed to reach backend: {e}")
@@ -381,7 +374,6 @@ with tab2:
 
             if updates > 0:
                 st.success(f"✅ Updated {updates} card(s). Refreshing...")
-                # reload
                 try:
                     st.experimental_rerun()
                 except Exception:
