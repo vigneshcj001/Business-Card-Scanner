@@ -1,7 +1,7 @@
 # app.py
 import os
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import streamlit as st
 import pandas as pd
@@ -42,13 +42,24 @@ def csv_str_to_list(s: str):
         return []
     return [x.strip() for x in str(s).split(",") if x.strip()]
 
+def _truncate_name(s: str, length: int = 30) -> str:
+    if not s:
+        return ""
+    return s if len(s) <= length else s[: length - 3] + "..."
+
 def _clean_payload_for_backend(payload: dict) -> dict:
+    """
+    Convert csv strings to lists when appropriate and drop empty fields.
+    """
     out = {}
     for k, v in payload.items():
         if v is None:
             continue
         if k in ("phone_numbers", "social_links"):
-            out[k] = csv_str_to_list(v) if not isinstance(v, list) else v
+            if isinstance(v, list):
+                out[k] = v
+            else:
+                out[k] = csv_str_to_list(v)
         else:
             out[k] = v
     return out
@@ -63,18 +74,49 @@ def fetch_all_cards(timeout=20) -> List[Dict[str, Any]]:
         st.error(f"Failed to fetch cards: {e}")
         return []
 
+def patch_card(card_id: str, payload: dict, timeout: int = 30) -> Tuple[bool, str]:
+    """
+    Unified helper to PATCH a single card. Returns (success, message).
+    """
+    try:
+        r = requests.patch(f"{BACKEND}/update_card/{card_id}", json=_clean_payload_for_backend(payload), timeout=timeout)
+        if r.status_code in (200, 201):
+            return True, "Updated"
+        else:
+            try:
+                err = r.json()
+            except Exception:
+                err = r.text
+            return False, f"Failed: {err}"
+    except Exception as e:
+        return False, str(e)
+
+def delete_card(card_id: str, timeout: int = 30) -> Tuple[bool, str]:
+    try:
+        r = requests.delete(f"{BACKEND}/delete_card/{card_id}", timeout=timeout)
+        if r.status_code in (200, 204):
+            return True, "Deleted"
+        else:
+            try:
+                err = r.json()
+            except Exception:
+                err = r.text
+            return False, f"Failed to delete: {err}"
+    except Exception as e:
+        return False, str(e)
+
 # ----------------------------
 # Layout: Tabs
 # ----------------------------
 tab1, tab2 = st.tabs(["📤 Upload Card", "📁 View All Cards"])
 
 # ----------------------------
-# TAB 1 — Upload Card
+# TAB 1 — Upload Card + Manual Form
 # ----------------------------
 with tab1:
     col_preview, col_upload = st.columns([3, 7])
 
-    # Upload column
+    # Upload column (larger)
     with col_upload:
         st.markdown("### Upload card")
         uploaded_file = st.file_uploader(
@@ -86,7 +128,6 @@ with tab1:
             progress = st.progress(10)
             time.sleep(0.08)
             progress.progress(30)
-
             with st.spinner("Processing image with OCR and uploading..."):
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
                 try:
@@ -101,6 +142,8 @@ with tab1:
                     if "data" in res:
                         st.success("Inserted Successfully!")
                         card = res["data"]
+                        # hide backend-only fields if present
+                        card.pop("field_validations", None)
                         df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
                         st.dataframe(df, use_container_width=True)
                         st.download_button(
@@ -112,10 +155,17 @@ with tab1:
                     else:
                         st.warning("Backend returned success but no data payload.")
                 else:
-                    st.error("Upload failed.")
-
+                    if response is not None:
+                        try:
+                            err = response.json()
+                        except Exception:
+                            err = response.text
+                        st.error(f"Upload failed: {err}")
+                    else:
+                        st.error("Upload failed (no response).")
             progress.progress(100)
 
+    # Preview column (narrow)
     with col_preview:
         st.markdown("### Preview")
         if uploaded_file:
@@ -125,7 +175,7 @@ with tab1:
 
     st.markdown("---")
 
-    # Manual entry form
+    # Manual form (collapsible)
     with st.expander("📋 Or fill details manually"):
         with st.form("manual_card_form"):
             c1, c2 = st.columns(2)
@@ -137,6 +187,7 @@ with tab1:
             website = c2.text_input("Website")
             address = st.text_area("Address")
             social_links = st.text_input("Social links (comma separated)")
+            more_details = st.text_area("More details (leave empty to fill later)")
             additional_notes = st.text_area("Notes / extra info")
             submitted = st.form_submit_button("📤 Create Card (manual)")
 
@@ -150,15 +201,12 @@ with tab1:
                 "website": website,
                 "address": address,
                 "social_links": social_links,
+                "more_details": more_details or "",
                 "additional_notes": additional_notes,
             }
             with st.spinner("Saving..."):
                 try:
-                    r = requests.post(
-                        f"{BACKEND}/create_card",
-                        json=_clean_payload_for_backend(payload),
-                        timeout=30
-                    )
+                    r = requests.post(f"{BACKEND}/create_card", json=_clean_payload_for_backend(payload), timeout=30)
                     r.raise_for_status()
                 except Exception as e:
                     st.error(f"Failed to reach backend: {e}")
@@ -169,6 +217,7 @@ with tab1:
                     if "data" in res:
                         st.success("Inserted Successfully!")
                         card = res["data"]
+                        card.pop("field_validations", None)
                         df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
                         st.dataframe(df, use_container_width=True)
                         st.download_button(
@@ -177,71 +226,169 @@ with tab1:
                             "business_card_manual.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
+                    else:
+                        st.warning("Created but no data returned.")
+                else:
+                    if r is not None:
+                        try:
+                            err = r.json()
+                        except Exception:
+                            err = r.text
+                        st.error(f"Failed to create card: {err}")
+                    else:
+                        st.error("Failed to create card (no response).")
 
-# ======================================================================
-# TAB 2 — View & Edit All Cards (NO drawer, NO row selector)
-# ======================================================================
+# ========================================================================
+# TAB 2 — View & Edit All Cards
+# ========================================================================
 with tab2:
     st.markdown("### All business cards")
-
+    # Top control row
     top_col1, top_col2 = st.columns([3, 1])
     with top_col1:
-        st.info("Edit any field below → click **Save Changes** to update the backend.")
+        st.info("Edit any column → press **Save Changes** to apply edits to the backend.")
     with top_col2:
+        # Fetch data to calculate download content
         data = fetch_all_cards()
         if data:
+            # Remove backend-only field_validations from download data
+            for d in data:
+                d.pop("field_validations", None)
             df_all_for_download = pd.DataFrame(data)
+            # convert lists to CSV strings for Excel
             for col in ["phone_numbers", "social_links"]:
-                df_all_for_download[col] = df_all_for_download[col].apply(list_to_csv_str)
+                if col in df_all_for_download.columns:
+                    df_all_for_download[col] = df_all_for_download[col].apply(list_to_csv_str)
             st.download_button(
                 "📥 Download All as Excel",
                 to_excel_bytes(df_all_for_download.drop(columns=["_id"], errors="ignore")),
                 "all_business_cards.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+        else:
+            st.write("")  # placeholder for alignment
 
+    # Fetch fresh data
     with st.spinner("Fetching all business cards..."):
         data = fetch_all_cards()
 
     if not data:
         st.warning("No cards found.")
     else:
+        # Normalize into DataFrame for editing/display
+        # Remove field_validations from each record to avoid showing it
+        for d in data:
+            d.pop("field_validations", None)
+
         df_all = pd.DataFrame(data)
 
-        expected_cols = [
-            "_id", "name", "designation", "company", "phone_numbers", "email",
-            "website", "address", "social_links", "additional_notes",
-            "created_at", "edited_at"
-        ]
+        # Ensure all expected columns exist (prevents editor crashing)
+        expected_cols = ["_id", "name", "designation", "company", "phone_numbers", "email", "website", "address", "social_links", "more_details", "additional_notes", "created_at", "edited_at"]
         for c in expected_cols:
             if c not in df_all.columns:
                 df_all[c] = ""
 
+        # Keep a separate list of ids (do NOT show these to the user)
         _ids = df_all["_id"].astype(str).tolist()
 
+        # Convert list columns to CSV strings for display/editing
         display_df = df_all.copy()
         for col in ["phone_numbers", "social_links"]:
             display_df[col] = display_df[col].apply(list_to_csv_str)
 
-        display_df = display_df.drop(columns=["_id"])
+        # Drop the _id column from the displayed dataframe so users don't see it
+        if "_id" in display_df.columns:
+            display_df = display_df.drop(columns=["_id"])
 
-        # Save button
-        save_clicked = st.button("💾 Save Changes")
+        # Place Save Changes button above the editor
+        save_col_left, save_col_mid, save_col_right = st.columns([1, 3, 1])
+        with save_col_left:
+            save_clicked = st.button("💾 Save Changes")
+        with save_col_mid:
+            st.write("")  # spacer
+        with save_col_right:
+            st.write("")  # spacer
 
+        # Use experimental_data_editor if available; fallback to data_editor
         try:
             edited = st.experimental_data_editor(
-                display_df, use_container_width=True, num_rows="fixed"
+                display_df,
+                use_container_width=True,
+                num_rows="fixed",    # prevents adding new rows (no duplicates)
             )
         except Exception:
             edited = st.data_editor(
-                display_df, use_container_width=True, num_rows="fixed"
+                display_df,
+                use_container_width=True,
+                num_rows="fixed",
             )
 
-        # Save logic
+        # --- Replacement for modal: expander-based editor + selectbox row picker ---
+        def open_edit_drawer_expander(row):
+            """
+            Render an edit form inside an expander. Uses the same patch_card / delete_card helpers
+            so drawer Save and top Save use identical logic.
+            """
+            title = f"Edit card — {_truncate_name(row.get('name', ''))}"
+            with st.expander(title, expanded=True):
+                c1, c2 = st.columns(2)
+                name_m = c1.text_input("Full name", value=row.get("name", ""), key=f"name-{row.get('_id')}")
+                designation_m = c2.text_input("Designation", value=row.get("designation", ""), key=f"desig-{row.get('_id')}")
+                company_m = c1.text_input("Company", value=row.get("company", ""), key=f"company-{row.get('_id')}")
+                phones_m = c2.text_input("Phone numbers (comma separated)", value=list_to_csv_str(row.get("phone_numbers", "")), key=f"phones-{row.get('_id')}")
+                email_m = c1.text_input("Email", value=row.get("email", ""), key=f"email-{row.get('_id')}")
+                website_m = c2.text_input("Website", value=row.get("website", ""), key=f"website-{row.get('_id')}")
+                address_m = st.text_area("Address", value=row.get("address", ""), key=f"address-{row.get('_id')}")
+                social_m = st.text_input("Social links (comma separated)", value=list_to_csv_str(row.get("social_links", "")), key=f"social-{row.get('_id')}")
+                more_m = st.text_area("More details", value=row.get("more_details", ""), key=f"more-{row.get('_id')}")
+                notes_m = st.text_area("Notes", value=row.get("additional_notes", ""), key=f"notes-{row.get('_id')}")
+                col_ok, col_del = st.columns([1, 1])
+                with col_ok:
+                    if st.button("Save changes", key=f"drawer-save-{row.get('_id')}"):
+                        payload = {
+                            "name": name_m,
+                            "designation": designation_m,
+                            "company": company_m,
+                            "phone_numbers": phones_m,
+                            "email": email_m,
+                            "website": website_m,
+                            "address": address_m,
+                            "social_links": social_m,
+                            "more_details": more_m,
+                            "additional_notes": notes_m,
+                        }
+                        success, msg = patch_card(row.get("_id"), payload)
+                        if success:
+                            st.success("Updated")
+                            st.experimental_rerun()
+                        else:
+                            st.error(f"Failed to update: {msg}")
+                with col_del:
+                    if st.button("🗑 Delete card", key=f"drawer-del-{row.get('_id')}"):
+                        success, msg = delete_card(row.get("_id"))
+                        if success:
+                            st.success("Deleted")
+                            st.experimental_rerun()
+                        else:
+                            st.error(f"Failed to delete: {msg}")
+
+        # Build friendly options list for selectbox
+        options = []
+        for idx, r in df_all.reset_index(drop=True).iterrows():
+            display_name = r.get("name") or r.get("company") or r.get("email") or f"Row {idx}"
+            options.append(f"{idx} — {display_name}")
+
+        selected = st.selectbox("Select a row to edit", options, index=0, help="Pick a contact to open the edit drawer")
+
+        if st.button("Open selected row in drawer"):
+            sel_idx = int(selected.split("—", 1)[0].strip())
+            row = df_all.iloc[sel_idx].to_dict()
+            open_edit_drawer_expander(row)
+
+        # When Save Changes clicked, iterate rows and diff against original and send PATCHs (uses patch_card)
         if save_clicked:
             updates = 0
             problems = 0
-
             for i in range(len(edited)):
                 orig = display_df.iloc[i]
                 new = edited.iloc[i]
@@ -250,30 +397,31 @@ with tab2:
                 for col in display_df.columns:
                     o = "" if pd.isna(orig[col]) else orig[col]
                     n = "" if pd.isna(new[col]) else new[col]
+
                     if str(o) != str(n):
-                        change_set[col] = csv_str_to_list(n) if col in ["phone_numbers", "social_links"] else n
+                        if col in ["phone_numbers", "social_links"]:
+                            items = csv_str_to_list(n)
+                            change_set[col] = items
+                        else:
+                            change_set[col] = n
 
                 if change_set:
-                    card_id = _ids[i]
-                    try:
-                        r = requests.patch(
-                            f"{BACKEND}/update_card/{card_id}",
-                            json=change_set,
-                            timeout=30
-                        )
-                        if r.status_code in (200, 201):
-                            updates += 1
-                        else:
-                            problems += 1
-                            st.error(f"Failed to update {card_id}: {r.text}")
-                    except Exception as e:
+                    card_id = _ids[i]   # always track correct MongoDB row
+                    success, msg = patch_card(card_id, change_set)
+                    if success:
+                        updates += 1
+                    else:
                         problems += 1
-                        st.error(f"Failed to update {card_id}: {e}")
+                        st.error(f"Failed to update {card_id}: {msg}")
 
-            if updates:
+            if updates > 0:
                 st.success(f"✅ Updated {updates} card(s). Refreshing...")
-                st.experimental_rerun()
-            elif problems == 0:
-                st.info("No changes detected.")
+                try:
+                    st.experimental_rerun()
+                except Exception:
+                    pass
             else:
-                st.warning(f"Save completed with {problems} failures.")
+                if problems == 0:
+                    st.info("No changes detected.")
+                else:
+                    st.warning(f"Save completed with {problems} failures.")
