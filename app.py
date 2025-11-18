@@ -1,4 +1,4 @@
-# app.py
+# File: app.py
 import os
 import time
 from typing import Any, Dict, List, Tuple
@@ -53,11 +53,14 @@ def _truncate_name(s: str, length: int = 30) -> str:
 
 def _clean_payload_for_backend(payload: dict) -> dict:
     """
-    Convert csv strings to lists when appropriate and drop empty fields.
+    Convert csv strings to lists when appropriate and drop empty/none fields.
     """
     out = {}
     for k, v in payload.items():
+        # drop None or empty string entirely
         if v is None:
+            continue
+        if isinstance(v, str) and v.strip() == "":
             continue
         if k in ("phone_numbers", "social_links"):
             if isinstance(v, list):
@@ -139,7 +142,15 @@ with tab1:
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
                 try:
                     response = requests.post(f"{BACKEND}/upload_card", files=files, timeout=120)
-                    response.raise_for_status()
+                    try:
+                        response.raise_for_status()
+                    except requests.exceptions.HTTPError:
+                        try:
+                            err = response.json()
+                        except Exception:
+                            err = response.text
+                        st.error(f"Upload failed: {err}")
+                        response = None
                 except Exception as e:
                     st.error(f"Failed to reach backend: {e}")
                     response = None
@@ -214,7 +225,13 @@ with tab1:
             with st.spinner("Saving..."):
                 try:
                     r = requests.post(f"{BACKEND}/create_card", json=_clean_payload_for_backend(payload), timeout=30)
-                    r.raise_for_status()
+                    if r.status_code >= 400:
+                        try:
+                            err = r.json()
+                        except Exception:
+                            err = r.text
+                        st.error(f"Failed to create card: {err}")
+                        r = None
                 except Exception as e:
                     st.error(f"Failed to reach backend: {e}")
                     r = None
