@@ -17,15 +17,10 @@ st.set_page_config(
     layout="wide",
 )
 
-# Ensure a refresh counter exists in session_state (mutating this triggers a rerun)
 if "refresh_counter" not in st.session_state:
     st.session_state["refresh_counter"] = 0
 
-# Backend URL (env var or default)
 BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000")
-
-# Optional: if you want the frontend to send an OpenAI API key to backend via Authorization header
-# set FRONTEND_OPENAI_KEY env var or configure Streamlit secrets.
 FRONTEND_OPENAI_KEY = os.environ.get("FRONTEND_OPENAI_KEY")
 
 st.title("📇 Business Card OCR → MongoDB")
@@ -116,13 +111,9 @@ def delete_card(card_id: str, timeout: int = 30) -> Tuple[bool, str]:
 # ----------------------------
 tab1, tab2 = st.tabs(["📤 Upload Card", "📁 View All Cards"])
 
-# ----------------------------
-# TAB 1 — Upload Card + Manual Form
-# ----------------------------
 with tab1:
     col_preview, col_upload = st.columns([3, 7])
 
-    # Upload column (larger)
     with col_upload:
         st.markdown("### Upload card")
         uploaded_file = st.file_uploader(
@@ -148,6 +139,7 @@ with tab1:
                     st.error(f"Failed to reach backend: {e}")
                     response = None
 
+                # Debug info to help if backend errors
                 if response is not None:
                     st.write(f"Backend status: {response.status_code}")
                     try:
@@ -219,7 +211,6 @@ with tab1:
                         st.error("Upload failed (no response).")
             progress.progress(100)
 
-    # Preview column (narrow)
     with col_preview:
         st.markdown("### Preview")
         if uploaded_file:
@@ -229,7 +220,6 @@ with tab1:
 
     st.markdown("---")
 
-    # Manual form (collapsible)
     with st.expander("📋 Or fill details manually"):
         with st.form("manual_card_form"):
             c1, c2 = st.columns(2)
@@ -300,9 +290,7 @@ with tab1:
                     else:
                         st.error("Failed to create card (no response).")
 
-# ========================================================================
-# TAB 2 — View & Edit All Cards
-# ========================================================================
+# TAB 2 — list & edit
 with tab2:
     st.markdown("### All business cards")
     top_col1, top_col2 = st.columns([3, 1])
@@ -336,18 +324,15 @@ with tab2:
             d.pop("field_validations", None)
 
         df_all = pd.DataFrame(data)
-
         expected_cols = ["_id", "name", "designation", "company", "phone_numbers", "email", "website", "address", "social_links", "more_details", "additional_notes", "created_at", "edited_at"]
         for c in expected_cols:
             if c not in df_all.columns:
                 df_all[c] = ""
 
         _ids = df_all["_id"].astype(str).tolist()
-
         display_df = df_all.copy()
         for col in ["phone_numbers", "social_links"]:
             display_df[col] = display_df[col].apply(list_to_csv_str)
-
         if "_id" in display_df.columns:
             display_df = display_df.drop(columns=["_id"])
 
@@ -360,17 +345,9 @@ with tab2:
             st.write("")
 
         try:
-            edited = st.experimental_data_editor(
-                display_df,
-                use_container_width=True,
-                num_rows="fixed",
-            )
+            edited = st.experimental_data_editor(display_df, use_container_width=True, num_rows="fixed")
         except Exception:
-            edited = st.data_editor(
-                display_df,
-                use_container_width=True,
-                num_rows="fixed",
-            )
+            edited = st.data_editor(display_df, use_container_width=True, num_rows="fixed")
 
         if "drawer_open" not in st.session_state:
             st.session_state["drawer_open"] = False
@@ -383,7 +360,6 @@ with tab2:
             options.append(f"{idx} — {display_name}")
 
         selected = st.selectbox("Select a row to edit", options, index=0, help="Pick a contact to open the edit drawer")
-
         if st.button("Open selected row in drawer"):
             sel_idx = int(selected.split("—", 1)[0].strip())
             st.session_state["drawer_open"] = True
