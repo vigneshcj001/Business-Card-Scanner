@@ -1,4 +1,3 @@
-# File: app.py
 import os
 import time
 from typing import Any, Dict, List, Tuple
@@ -22,7 +21,7 @@ if "refresh_counter" not in st.session_state:
     st.session_state["refresh_counter"] = 0
 
 # Backend URL (env var or default)
-BACKEND = os.environ.get("BACKEND_URL", "https://business-card-scanner-backend.onrender.com")
+BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000")
 
 st.title("📇 Business Card OCR → MongoDB")
 st.write("Upload → Extract OCR → Store → Edit → Download")
@@ -30,30 +29,36 @@ st.write("Upload → Extract OCR → Store → Edit → Download")
 # ----------------------------
 # Helpers
 # ----------------------------
+
 def to_excel_bytes(df: pd.DataFrame) -> bytes:
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, index=False)
     return output.getvalue()
 
+
 def list_to_csv_str(v):
     if isinstance(v, list):
         return ", ".join([str(x) for x in v])
     return v if v is not None else ""
+
 
 def csv_str_to_list(s: str):
     if s is None:
         return []
     return [x.strip() for x in str(s).split(",") if x.strip()]
 
+
 def _truncate_name(s: str, length: int = 30) -> str:
     if not s:
         return ""
     return s if len(s) <= length else s[: length - 3] + "..."
 
+
 def _clean_payload_for_backend(payload: dict) -> dict:
     """
     Convert csv strings to lists when appropriate and drop empty/none fields.
+    This keeps the payload canonical before sending to the backend.
     """
     out = {}
     for k, v in payload.items():
@@ -71,15 +76,18 @@ def _clean_payload_for_backend(payload: dict) -> dict:
             out[k] = v
     return out
 
+
 def fetch_all_cards(timeout=20) -> List[Dict[str, Any]]:
     try:
         resp = requests.get(f"{BACKEND}/all_cards", timeout=timeout)
         resp.raise_for_status()
         data = resp.json()
-        return data.get("data", [])
+        # backend may return {'data': [...]}
+        return data.get("data", data) if isinstance(data, dict) else data
     except Exception as e:
         st.error(f"Failed to fetch cards: {e}")
         return []
+
 
 def patch_card(card_id: str, payload: dict, timeout: int = 30) -> Tuple[bool, str]:
     """
@@ -100,6 +108,7 @@ def patch_card(card_id: str, payload: dict, timeout: int = 30) -> Tuple[bool, st
     except Exception as e:
         return False, str(e)
 
+
 def delete_card(card_id: str, timeout: int = 30) -> Tuple[bool, str]:
     try:
         card_id = str(card_id)
@@ -114,6 +123,7 @@ def delete_card(card_id: str, timeout: int = 30) -> Tuple[bool, str]:
             return False, f"Failed to delete: {err}"
     except Exception as e:
         return False, str(e)
+
 
 # ----------------------------
 # Layout: Tabs
@@ -141,7 +151,7 @@ with tab1:
             with st.spinner("Processing image with OCR and uploading..."):
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
                 try:
-                    response = requests.post(f"{BACKEND}/upload_card", files=files, timeout=120)
+                    response = requests.post(f"{BACKEND}/extract", files=files, timeout=120)
                     try:
                         response.raise_for_status()
                     except requests.exceptions.HTTPError:
@@ -157,19 +167,58 @@ with tab1:
 
                 if response and response.status_code in (200, 201):
                     res = response.json()
-                    if "data" in res:
-                        st.success("Inserted Successfully!")
-                        card = res["data"]
-                        # hide backend-only fields if present
-                        card.pop("field_validations", None)
-                        df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
+                    # backend might return canonical object directly or wrapped in {'data': ...}
+                    card = res.get("data") if isinstance(res, dict) and "data" in res else res
+
+                    if card:
+                        st.success("Extracted — review and save below")
+                        # convert lists to CSV strings for display
+                        card_display = dict(card)
+                        card_display["phone_numbers"] = list_to_csv_str(card_display.get("phone_numbers", []))
+                        card_display["social_links"] = list_to_csv_str(card_display.get("social_links", []))
+
+                        df = pd.DataFrame([card_display]).drop(columns=["_id"], errors="ignore")
                         st.dataframe(df, use_container_width=True)
-                        st.download_button(
-                            "📥 Download as Excel",
-                            to_excel_bytes(df),
-                            "business_card.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
+
+                        # Provide a quick "Save to DB" button which posts to create_card
+                        if st.button("📥 Save extracted contact to DB"):
+                            payload = {
+                                "name": card.get("name"),
+                                "designation": card.get("designation"),
+                                "company": card.get("company"),
+                                "phone_numbers": card.get("phone_numbers") or [],
+                                "email": card.get("email"),
+                                "website": card.get("website"),
+                                "address": card.get("address"),
+                                "social_links": card.get("social_links") or [],
+                                "more_details": card.get("more_details") or "",
+                                "additional_notes": card.get("additional_notes") or "",
+                            }
+                            try:
+                                r = requests.post(f"{BACKEND}/create_card", json=payload, timeout=30)
+                                if r.status_code >= 400:
+                                    try:
+                                        err = r.json()
+                                    except Exception:
+                                        err = r.text
+                                    st.error(f"Failed to create card: {err}")
+                                else:
+                                    res2 = r.json()
+                                    saved = res2.get("data") if isinstance(res2, dict) and "data" in res2 else res2
+                                    st.success("Inserted Successfully!")
+                                    saved_display = dict(saved)
+                                    saved_display["phone_numbers"] = list_to_csv_str(saved_display.get("phone_numbers", []))
+                                    saved_display["social_links"] = list_to_csv_str(saved_display.get("social_links", []))
+                                    df2 = pd.DataFrame([saved_display]).drop(columns=["_id"], errors="ignore")
+                                    st.dataframe(df2, use_container_width=True)
+                                    st.download_button(
+                                        "📥 Download as Excel",
+                                        to_excel_bytes(df2),
+                                        "business_card.xlsx",
+                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                    )
+                            except Exception as e:
+                                st.error(f"Failed to reach backend: {e}")
                     else:
                         st.warning("Backend returned success but no data payload.")
                 else:
@@ -214,13 +263,13 @@ with tab1:
                 "name": name,
                 "designation": designation,
                 "company": company,
-                "phone_numbers": phones,
+                "phone_numbers": csv_str_to_list(phones),
                 "email": email,
                 "website": website,
                 "address": address,
-                "social_links": social_links,
+                "social_links": csv_str_to_list(social_links),
                 "more_details": more_details or "",
-                "additional_notes": additional_notes,
+                "additional_notes": additional_notes or "",
             }
             with st.spinner("Saving..."):
                 try:
@@ -238,11 +287,13 @@ with tab1:
 
                 if r and r.status_code in (200, 201):
                     res = r.json()
-                    if "data" in res:
+                    created = res.get("data") if isinstance(res, dict) and "data" in res else res
+                    if created:
                         st.success("Inserted Successfully!")
-                        card = res["data"]
-                        card.pop("field_validations", None)
-                        df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
+                        created_display = dict(created)
+                        created_display["phone_numbers"] = list_to_csv_str(created_display.get("phone_numbers", []))
+                        created_display["social_links"] = list_to_csv_str(created_display.get("social_links", []))
+                        df = pd.DataFrame([created_display]).drop(columns=["_id"], errors="ignore")
                         st.dataframe(df, use_container_width=True)
                         st.download_button(
                             "📥 Download as Excel",
@@ -338,7 +389,7 @@ with tab2:
             edited = st.experimental_data_editor(
                 display_df,
                 use_container_width=True,
-                num_rows="fixed",    # prevents adding new rows (no duplicates)
+                num_rows="fixed",
             )
         except Exception:
             edited = st.data_editor(
