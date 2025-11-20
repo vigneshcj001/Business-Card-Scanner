@@ -24,7 +24,14 @@ BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000")
 FRONTEND_OPENAI_KEY = os.environ.get("FRONTEND_OPENAI_KEY")  # optional
 
 st.title("📇 Business Card OCR → MongoDB")
-st.write("Upload → Extract OCR → Store → Edit → Download")
+st.write("Upload → Extract OCR (OpenAI required) → Store → Edit → Download")
+
+# If frontend key not set, allow user to paste it (keeps secret in session only)
+if not FRONTEND_OPENAI_KEY:
+    st.info("An OpenAI API key is required for parsing. Provide it below (it will be sent to the backend).")
+    key_input = st.text_input("OpenAI API key (sk-...)", type="password")
+    if key_input:
+        FRONTEND_OPENAI_KEY = key_input
 
 # ----------------------------
 # Helpers
@@ -135,82 +142,87 @@ with tab1:
                 headers = {}
                 if FRONTEND_OPENAI_KEY:
                     headers["Authorization"] = f"Bearer {FRONTEND_OPENAI_KEY}"
-
-                try:
-                    response = requests.post(f"{BACKEND}/extract", files=files, headers=headers, timeout=120)
-                except Exception as e:
-                    st.error(f"Failed to reach backend: {e}")
+                else:
+                    st.error("OpenAI API key is required to parse. Provide it in the box above or set FRONTEND_OPENAI_KEY env var.")
+                    headers = {}
                     response = None
 
-                if response is not None:
-                    st.write(f"Backend status: {response.status_code}")
+                if headers:
                     try:
-                        st.json(response.json())
-                    except Exception:
-                        st.text(response.text)
+                        response = requests.post(f"{BACKEND}/extract", files=files, headers=headers, timeout=120)
+                    except Exception as e:
+                        st.error(f"Failed to reach backend: {e}")
+                        response = None
 
-                if response and response.status_code in (200, 201):
-                    res = response.json()
-                    card = res.get("data") if isinstance(res, dict) and "data" in res else res
-
-                    if card:
-                        st.success("Extracted — review and save below")
-                        card_display = dict(card)
-                        card_display["phone_numbers"] = list_to_csv_str(card_display.get("phone_numbers", []))
-                        card_display["social_links"] = list_to_csv_str(card_display.get("social_links", []))
-
-                        df = pd.DataFrame([card_display]).drop(columns=["_id"], errors="ignore")
-                        st.dataframe(df, use_container_width=True)
-
-                        if st.button("📥 Save extracted contact to DB"):
-                            payload = {
-                                "name": card.get("name"),
-                                "designation": card.get("designation"),
-                                "company": card.get("company"),
-                                "phone_numbers": card.get("phone_numbers") or [],
-                                "email": card.get("email"),
-                                "website": card.get("website"),
-                                "address": card.get("address"),
-                                "social_links": card.get("social_links") or [],
-                                "more_details": card.get("more_details") or "",
-                                "additional_notes": card.get("additional_notes") or "",
-                            }
-                            try:
-                                r = requests.post(f"{BACKEND}/create_card", json=payload, timeout=30)
-                                if r.status_code >= 400:
-                                    try:
-                                        err = r.json()
-                                    except Exception:
-                                        err = r.text
-                                    st.error(f"Failed to create card: {err}")
-                                else:
-                                    res2 = r.json()
-                                    saved = res2.get("data") if isinstance(res2, dict) and "data" in res2 else res2
-                                    st.success("Inserted Successfully!")
-                                    saved_display = dict(saved)
-                                    saved_display["phone_numbers"] = list_to_csv_str(saved_display.get("phone_numbers", []))
-                                    saved_display["social_links"] = list_to_csv_str(saved_display.get("social_links", []))
-                                    df2 = pd.DataFrame([saved_display]).drop(columns=["_id"], errors="ignore")
-                                    st.dataframe(df2, use_container_width=True)
-                                    st.download_button(
-                                        "📥 Download as Excel",
-                                        to_excel_bytes(df2),
-                                        "business_card.xlsx",
-                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                                    )
-                            except Exception as e:
-                                st.error(f"Failed to reach backend: {e}")
-                    else:
-                        st.warning("Backend returned success but no data payload.")
-                else:
                     if response is not None:
+                        st.write(f"Backend status: {response.status_code}")
                         try:
-                            err = response.json()
+                            st.json(response.json())
                         except Exception:
-                            err = response.text
-                        st.error(f"Upload failed: {err}")
+                            st.text(response.text)
+
+                    if response and response.status_code in (200, 201):
+                        res = response.json()
+                        card = res.get("data") if isinstance(res, dict) and "data" in res else res
+
+                        if card:
+                            st.success("Extracted — review and save below")
+                            card_display = dict(card)
+                            card_display["phone_numbers"] = list_to_csv_str(card_display.get("phone_numbers", []))
+                            card_display["social_links"] = list_to_csv_str(card_display.get("social_links", []))
+
+                            df = pd.DataFrame([card_display]).drop(columns=["_id"], errors="ignore")
+                            st.dataframe(df, use_container_width=True)
+
+                            if st.button("📥 Save extracted contact to DB"):
+                                payload = {
+                                    "name": card.get("name"),
+                                    "designation": card.get("designation"),
+                                    "company": card.get("company"),
+                                    "phone_numbers": card.get("phone_numbers") or [],
+                                    "email": card.get("email"),
+                                    "website": card.get("website"),
+                                    "address": card.get("address"),
+                                    "social_links": card.get("social_links") or [],
+                                    "more_details": card.get("more_details") or "",
+                                    "additional_notes": card.get("additional_notes") or "",
+                                }
+                                try:
+                                    r = requests.post(f"{BACKEND}/create_card", json=payload, timeout=30)
+                                    if r.status_code >= 400:
+                                        try:
+                                            err = r.json()
+                                        except Exception:
+                                            err = r.text
+                                        st.error(f"Failed to create card: {err}")
+                                    else:
+                                        res2 = r.json()
+                                        saved = res2.get("data") if isinstance(res2, dict) and "data" in res2 else res2
+                                        st.success("Inserted Successfully!")
+                                        saved_display = dict(saved)
+                                        saved_display["phone_numbers"] = list_to_csv_str(saved_display.get("phone_numbers", []))
+                                        saved_display["social_links"] = list_to_csv_str(saved_display.get("social_links", []))
+                                        df2 = pd.DataFrame([saved_display]).drop(columns=["_id"], errors="ignore")
+                                        st.dataframe(df2, use_container_width=True)
+                                        st.download_button(
+                                            "📥 Download as Excel",
+                                            to_excel_bytes(df2),
+                                            "business_card.xlsx",
+                                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                        )
+                                except Exception as e:
+                                    st.error(f"Failed to reach backend: {e}")
+                        else:
+                            st.warning("Backend returned success but no data payload.")
                     else:
-                        st.error("Upload failed (no response).")
+                        if response is not None:
+                            try:
+                                err = response.json()
+                            except Exception:
+                                err = response.text
+                            st.error(f"Upload failed: {err}")
+                        else:
+                            st.error("Upload failed (no response).")
             progress.progress(100)
 
     with col_preview:
