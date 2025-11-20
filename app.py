@@ -56,13 +56,8 @@ def _truncate_name(s: str, length: int = 30) -> str:
     return s if len(s) <= length else s[: length - 3] + "..."
 
 def _clean_payload_for_backend(payload: dict) -> dict:
-    """
-    Convert csv strings to lists when appropriate and drop empty/none fields.
-    This keeps the payload canonical before sending to the backend.
-    """
     out = {}
     for k, v in payload.items():
-        # drop None or empty string entirely
         if v is None:
             continue
         if isinstance(v, str) and v.strip() == "":
@@ -81,18 +76,13 @@ def fetch_all_cards(timeout=20) -> List[Dict[str, Any]]:
         resp = requests.get(f"{BACKEND}/all_cards", timeout=timeout)
         resp.raise_for_status()
         data = resp.json()
-        # backend may return {'data': [...]}
         return data.get("data", data) if isinstance(data, dict) else data
     except Exception as e:
         st.error(f"Failed to fetch cards: {e}")
         return []
 
 def patch_card(card_id: str, payload: dict, timeout: int = 30) -> Tuple[bool, str]:
-    """
-    Unified helper to PATCH a single card. Returns (success, message).
-    """
     try:
-        # ensure id is string
         card_id = str(card_id)
         r = requests.patch(f"{BACKEND}/update_card/{card_id}", json=_clean_payload_for_backend(payload), timeout=timeout)
         if r.status_code in (200, 201):
@@ -145,7 +135,6 @@ with tab1:
             time.sleep(0.08)
             progress.progress(30)
             with st.spinner("Processing image with OCR and uploading..."):
-                # Include MIME type when sending file
                 files = {
                     "file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type or "application/octet-stream")
                 }
@@ -159,7 +148,6 @@ with tab1:
                     st.error(f"Failed to reach backend: {e}")
                     response = None
 
-                # Show status and body to help debugging if it fails
                 if response is not None:
                     st.write(f"Backend status: {response.status_code}")
                     try:
@@ -169,12 +157,10 @@ with tab1:
 
                 if response and response.status_code in (200, 201):
                     res = response.json()
-                    # backend might return canonical object directly or wrapped in {'data': ...}
                     card = res.get("data") if isinstance(res, dict) and "data" in res else res
 
                     if card:
                         st.success("Extracted — review and save below")
-                        # convert lists to CSV strings for display
                         card_display = dict(card)
                         card_display["phone_numbers"] = list_to_csv_str(card_display.get("phone_numbers", []))
                         card_display["social_links"] = list_to_csv_str(card_display.get("social_links", []))
@@ -182,7 +168,6 @@ with tab1:
                         df = pd.DataFrame([card_display]).drop(columns=["_id"], errors="ignore")
                         st.dataframe(df, use_container_width=True)
 
-                        # Provide a quick "Save to DB" button which posts to create_card
                         if st.button("📥 Save extracted contact to DB"):
                             payload = {
                                 "name": card.get("name"),
@@ -320,19 +305,15 @@ with tab1:
 # ========================================================================
 with tab2:
     st.markdown("### All business cards")
-    # Top control row
     top_col1, top_col2 = st.columns([3, 1])
     with top_col1:
         st.info("Edit any column → press **Save Changes** to apply edits to the backend.")
     with top_col2:
-        # Fetch data to calculate download content
         data = fetch_all_cards()
         if data:
-            # Remove backend-only field_validations from download data
             for d in data:
                 d.pop("field_validations", None)
             df_all_for_download = pd.DataFrame(data)
-            # convert lists to CSV strings for Excel
             for col in ["phone_numbers", "social_links"]:
                 if col in df_all_for_download.columns:
                     df_all_for_download[col] = df_all_for_download[col].apply(list_to_csv_str)
@@ -343,50 +324,41 @@ with tab2:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         else:
-            st.write("")  # placeholder for alignment
+            st.write("")
 
-    # Fetch fresh data
     with st.spinner("Fetching all business cards..."):
         data = fetch_all_cards()
 
     if not data:
         st.warning("No cards found.")
     else:
-        # Normalize into DataFrame for editing/display
-        # Remove field_validations from each record to avoid showing it
         for d in data:
             d.pop("field_validations", None)
 
         df_all = pd.DataFrame(data)
 
-        # Ensure all expected columns exist (prevents editor crashing)
         expected_cols = ["_id", "name", "designation", "company", "phone_numbers", "email", "website", "address", "social_links", "more_details", "additional_notes", "created_at", "edited_at"]
         for c in expected_cols:
             if c not in df_all.columns:
                 df_all[c] = ""
 
-        # Keep a separate list of ids (do NOT show these to the user)
         _ids = df_all["_id"].astype(str).tolist()
 
-        # Convert list columns to CSV strings for display/editing
         display_df = df_all.copy()
         for col in ["phone_numbers", "social_links"]:
             display_df[col] = display_df[col].apply(list_to_csv_str)
 
-        # Drop the _id column from the displayed dataframe so users don't see it
         if "_id" in display_df.columns:
             display_df = display_df.drop(columns=["_id"])
 
-        # Place Save Changes button above the editor
         save_col_left, save_col_mid, save_col_right = st.columns([1, 3, 1])
         with save_col_left:
             save_clicked = st.button("💾 Save Changes")
         with save_col_mid:
-            st.write("")  # spacer
+            st.write("")
         with save_col_right:
-            st.write("")  # spacer
+            st.write("")
 
-        # Use experimental_data_editor if available; fallback to data_editor
         try:
             edited = st.experimental_data_editor(
                 display_df,
@@ -400,16 +372,11 @@ with tab2:
                 num_rows="fixed",
             )
 
-        # -----------------------
-        # Persisted drawer implementation using session_state
-        # -----------------------
-        # Ensure session state defaults
         if "drawer_open" not in st.session_state:
             st.session_state["drawer_open"] = False
         if "drawer_row" not in st.session_state:
             st.session_state["drawer_row"] = None
 
-        # Build friendly options list for selectbox
         options = []
         for idx, r in df_all.reset_index(drop=True).iterrows():
             display_name = r.get("name") or r.get("company") or r.get("email") or f"Row {idx}"
@@ -417,26 +384,20 @@ with tab2:
 
         selected = st.selectbox("Select a row to edit", options, index=0, help="Pick a contact to open the edit drawer")
 
-        # When user clicks to open, persist the chosen row index in session_state
         if st.button("Open selected row in drawer"):
             sel_idx = int(selected.split("—", 1)[0].strip())
             st.session_state["drawer_open"] = True
             st.session_state["drawer_row"] = sel_idx
 
-        # If drawer_open, render the expander every run (so its buttons can be clicked)
         if st.session_state.get("drawer_open") and st.session_state.get("drawer_row") is not None:
             sel_idx = st.session_state["drawer_row"]
-            # guard in case data changed length
             if sel_idx < 0 or sel_idx >= len(df_all):
                 st.warning("Selected row is no longer available.")
                 st.session_state["drawer_open"] = False
                 st.session_state["drawer_row"] = None
             else:
                 row = df_all.iloc[sel_idx].to_dict()
-
-                # Use a string id for keys and backend calls
                 id_str = str(row.get("_id"))
-
                 title = f"Edit card — {_truncate_name(row.get('name', ''))}"
                 with st.expander(title, expanded=True):
                     c1, c2 = st.columns(2)
@@ -469,7 +430,6 @@ with tab2:
                             success, msg = patch_card(id_str, payload)
                             if success:
                                 st.success("Updated")
-                                # close drawer and trigger rerun via session_state mutation
                                 st.session_state["drawer_open"] = False
                                 st.session_state["drawer_row"] = None
                                 st.session_state["refresh_counter"] = st.session_state.get("refresh_counter", 0) + 1
@@ -493,7 +453,6 @@ with tab2:
                             st.session_state["drawer_row"] = None
                             st.session_state["refresh_counter"] = st.session_state.get("refresh_counter", 0) + 1
 
-        # When Save Changes clicked, iterate rows and diff against original and send PATCHs (uses patch_card)
         if save_clicked:
             updates = 0
             problems = 0
@@ -514,7 +473,7 @@ with tab2:
                             change_set[col] = n
 
                 if change_set:
-                    card_id = _ids[i]   # always track correct MongoDB row
+                    card_id = _ids[i]
                     success, msg = patch_card(card_id, change_set)
                     if success:
                         updates += 1
@@ -524,7 +483,6 @@ with tab2:
 
             if updates > 0:
                 st.success(f"✅ Updated {updates} card(s). Refreshing...")
-                # trigger rerun via session_state mutation
                 st.session_state["refresh_counter"] = st.session_state.get("refresh_counter", 0) + 1
             else:
                 if problems == 0:
