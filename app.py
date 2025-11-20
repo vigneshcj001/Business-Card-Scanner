@@ -1,3 +1,4 @@
+# streamlit_frontend.py
 import os
 import time
 from typing import Any, Dict, List, Tuple
@@ -23,37 +24,36 @@ if "refresh_counter" not in st.session_state:
 # Backend URL (env var or default)
 BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000")
 
+# Optional: if you want the frontend to send an OpenAI API key to backend via Authorization header
+# set FRONTEND_OPENAI_KEY env var or configure Streamlit secrets.
+FRONTEND_OPENAI_KEY = os.environ.get("FRONTEND_OPENAI_KEY")
+
 st.title("📇 Business Card OCR → MongoDB")
 st.write("Upload → Extract OCR → Store → Edit → Download")
 
 # ----------------------------
 # Helpers
 # ----------------------------
-
 def to_excel_bytes(df: pd.DataFrame) -> bytes:
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, index=False)
     return output.getvalue()
 
-
 def list_to_csv_str(v):
     if isinstance(v, list):
         return ", ".join([str(x) for x in v])
     return v if v is not None else ""
-
 
 def csv_str_to_list(s: str):
     if s is None:
         return []
     return [x.strip() for x in str(s).split(",") if x.strip()]
 
-
 def _truncate_name(s: str, length: int = 30) -> str:
     if not s:
         return ""
     return s if len(s) <= length else s[: length - 3] + "..."
-
 
 def _clean_payload_for_backend(payload: dict) -> dict:
     """
@@ -76,7 +76,6 @@ def _clean_payload_for_backend(payload: dict) -> dict:
             out[k] = v
     return out
 
-
 def fetch_all_cards(timeout=20) -> List[Dict[str, Any]]:
     try:
         resp = requests.get(f"{BACKEND}/all_cards", timeout=timeout)
@@ -87,7 +86,6 @@ def fetch_all_cards(timeout=20) -> List[Dict[str, Any]]:
     except Exception as e:
         st.error(f"Failed to fetch cards: {e}")
         return []
-
 
 def patch_card(card_id: str, payload: dict, timeout: int = 30) -> Tuple[bool, str]:
     """
@@ -108,7 +106,6 @@ def patch_card(card_id: str, payload: dict, timeout: int = 30) -> Tuple[bool, st
     except Exception as e:
         return False, str(e)
 
-
 def delete_card(card_id: str, timeout: int = 30) -> Tuple[bool, str]:
     try:
         card_id = str(card_id)
@@ -123,7 +120,6 @@ def delete_card(card_id: str, timeout: int = 30) -> Tuple[bool, str]:
             return False, f"Failed to delete: {err}"
     except Exception as e:
         return False, str(e)
-
 
 # ----------------------------
 # Layout: Tabs
@@ -149,21 +145,27 @@ with tab1:
             time.sleep(0.08)
             progress.progress(30)
             with st.spinner("Processing image with OCR and uploading..."):
-                files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
+                # Include MIME type when sending file
+                files = {
+                    "file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type or "application/octet-stream")
+                }
+                headers = {}
+                if FRONTEND_OPENAI_KEY:
+                    headers["Authorization"] = f"Bearer {FRONTEND_OPENAI_KEY}"
+
                 try:
-                    response = requests.post(f"{BACKEND}/extract", files=files, timeout=120)
-                    try:
-                        response.raise_for_status()
-                    except requests.exceptions.HTTPError:
-                        try:
-                            err = response.json()
-                        except Exception:
-                            err = response.text
-                        st.error(f"Upload failed: {err}")
-                        response = None
+                    response = requests.post(f"{BACKEND}/extract", files=files, headers=headers, timeout=120)
                 except Exception as e:
                     st.error(f"Failed to reach backend: {e}")
                     response = None
+
+                # Show status and body to help debugging if it fails
+                if response is not None:
+                    st.write(f"Backend status: {response.status_code}")
+                    try:
+                        st.json(response.json())
+                    except Exception:
+                        st.text(response.text)
 
                 if response and response.status_code in (200, 201):
                     res = response.json()
