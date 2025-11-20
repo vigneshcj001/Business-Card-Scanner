@@ -17,16 +17,11 @@ st.set_page_config(
     layout="wide",
 )
 
-# Ensure a refresh counter exists in session_state (mutating this triggers a rerun)
 if "refresh_counter" not in st.session_state:
     st.session_state["refresh_counter"] = 0
 
-# Backend URL (env var or default)
 BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000")
-
-# Optional: if you want the frontend to send an OpenAI API key to backend via Authorization header
-# set FRONTEND_OPENAI_KEY env var or configure Streamlit secrets.
-FRONTEND_OPENAI_KEY = os.environ.get("FRONTEND_OPENAI_KEY")
+FRONTEND_OPENAI_KEY = os.environ.get("FRONTEND_OPENAI_KEY")  # optional
 
 st.title("📇 Business Card OCR → MongoDB")
 st.write("Upload → Extract OCR → Store → Edit → Download")
@@ -122,7 +117,6 @@ tab1, tab2 = st.tabs(["📤 Upload Card", "📁 View All Cards"])
 with tab1:
     col_preview, col_upload = st.columns([3, 7])
 
-    # Upload column (larger)
     with col_upload:
         st.markdown("### Upload card")
         uploaded_file = st.file_uploader(
@@ -219,7 +213,6 @@ with tab1:
                         st.error("Upload failed (no response).")
             progress.progress(100)
 
-    # Preview column (narrow)
     with col_preview:
         st.markdown("### Preview")
         if uploaded_file:
@@ -229,7 +222,6 @@ with tab1:
 
     st.markdown("---")
 
-    # Manual form (collapsible)
     with st.expander("📋 Or fill details manually"):
         with st.form("manual_card_form"):
             c1, c2 = st.columns(2)
