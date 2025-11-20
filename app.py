@@ -21,17 +21,14 @@ if "refresh_counter" not in st.session_state:
     st.session_state["refresh_counter"] = 0
 
 BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000")
-FRONTEND_OPENAI_KEY = os.environ.get("FRONTEND_OPENAI_KEY")  # optional
+FRONTEND_OPENAI_KEY = os.environ.get("FRONTEND_OPENAI_KEY")  # expected to be set in env (.env) so UI doesn't prompt
 
 st.title("📇 Business Card OCR → MongoDB")
 st.write("Upload → Extract OCR (OpenAI required) → Store → Edit → Download")
 
-# If frontend key not set, allow user to paste it (keeps secret in session only)
 if not FRONTEND_OPENAI_KEY:
-    st.info("An OpenAI API key is required for parsing. Provide it below (it will be sent to the backend).")
-    key_input = st.text_input("OpenAI API key (sk-...)", type="password")
-    if key_input:
-        FRONTEND_OPENAI_KEY = key_input
+    st.error("FRONTEND_OPENAI_KEY environment variable is not set. Please set it to a valid OpenAI key (sk-...). The frontend will send this key to the backend for parsing.")
+    st.stop()
 
 # ----------------------------
 # Helpers
@@ -86,7 +83,8 @@ def fetch_all_cards(timeout=20) -> List[Dict[str, Any]]:
 def patch_card(card_id: str, payload: dict, timeout: int = 30) -> Tuple[bool, str]:
     try:
         card_id = str(card_id)
-        r = requests.patch(f"{BACKEND}/update_card/{card_id}", json=_clean_payload_for_backend(payload), timeout=timeout)
+        headers = {"Authorization": f"Bearer {FRONTEND_OPENAI_KEY}"} if FRONTEND_OPENAI_KEY else {}
+        r = requests.patch(f"{BACKEND}/update_card/{card_id}", json=_clean_payload_for_backend(payload), headers=headers, timeout=timeout)
         if r.status_code in (200, 201):
             return True, "Updated"
         else:
@@ -101,7 +99,8 @@ def patch_card(card_id: str, payload: dict, timeout: int = 30) -> Tuple[bool, st
 def delete_card(card_id: str, timeout: int = 30) -> Tuple[bool, str]:
     try:
         card_id = str(card_id)
-        r = requests.delete(f"{BACKEND}/delete_card/{card_id}", timeout=timeout)
+        headers = {"Authorization": f"Bearer {FRONTEND_OPENAI_KEY}"} if FRONTEND_OPENAI_KEY else {}
+        r = requests.delete(f"{BACKEND}/delete_card/{card_id}", headers=headers, timeout=timeout)
         if r.status_code in (200, 204):
             return True, "Deleted"
         else:
@@ -139,90 +138,84 @@ with tab1:
                 files = {
                     "file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type or "application/octet-stream")
                 }
-                headers = {}
-                if FRONTEND_OPENAI_KEY:
-                    headers["Authorization"] = f"Bearer {FRONTEND_OPENAI_KEY}"
-                else:
-                    st.error("OpenAI API key is required to parse. Provide it in the box above or set FRONTEND_OPENAI_KEY env var.")
-                    headers = {}
+                headers = {"Authorization": f"Bearer {FRONTEND_OPENAI_KEY}"} if FRONTEND_OPENAI_KEY else {}
+
+                try:
+                    response = requests.post(f"{BACKEND}/extract", files=files, headers=headers, timeout=120)
+                except Exception as e:
+                    st.error(f"Failed to reach backend: {e}")
                     response = None
 
-                if headers:
+                if response is not None:
+                    st.write(f"Backend status: {response.status_code}")
                     try:
-                        response = requests.post(f"{BACKEND}/extract", files=files, headers=headers, timeout=120)
-                    except Exception as e:
-                        st.error(f"Failed to reach backend: {e}")
-                        response = None
+                        st.json(response.json())
+                    except Exception:
+                        st.text(response.text)
 
-                    if response is not None:
-                        st.write(f"Backend status: {response.status_code}")
-                        try:
-                            st.json(response.json())
-                        except Exception:
-                            st.text(response.text)
+                if response and response.status_code in (200, 201):
+                    res = response.json()
+                    card = res.get("data") if isinstance(res, dict) and "data" in res else res
 
-                    if response and response.status_code in (200, 201):
-                        res = response.json()
-                        card = res.get("data") if isinstance(res, dict) and "data" in res else res
+                    if card:
+                        st.success("Extracted — review and save below")
+                        card_display = dict(card)
+                        card_display["phone_numbers"] = list_to_csv_str(card_display.get("phone_numbers", []))
+                        card_display["social_links"] = list_to_csv_str(card_display.get("social_links", []))
 
-                        if card:
-                            st.success("Extracted — review and save below")
-                            card_display = dict(card)
-                            card_display["phone_numbers"] = list_to_csv_str(card_display.get("phone_numbers", []))
-                            card_display["social_links"] = list_to_csv_str(card_display.get("social_links", []))
+                        df = pd.DataFrame([card_display]).drop(columns=["_id"], errors="ignore")
+                        st.dataframe(df, use_container_width=True)
 
-                            df = pd.DataFrame([card_display]).drop(columns=["_id"], errors="ignore")
-                            st.dataframe(df, use_container_width=True)
-
-                            if st.button("📥 Save extracted contact to DB"):
-                                payload = {
-                                    "name": card.get("name"),
-                                    "designation": card.get("designation"),
-                                    "company": card.get("company"),
-                                    "phone_numbers": card.get("phone_numbers") or [],
-                                    "email": card.get("email"),
-                                    "website": card.get("website"),
-                                    "address": card.get("address"),
-                                    "social_links": card.get("social_links") or [],
-                                    "more_details": card.get("more_details") or "",
-                                    "additional_notes": card.get("additional_notes") or "",
-                                }
-                                try:
-                                    r = requests.post(f"{BACKEND}/create_card", json=payload, timeout=30)
-                                    if r.status_code >= 400:
-                                        try:
-                                            err = r.json()
-                                        except Exception:
-                                            err = r.text
-                                        st.error(f"Failed to create card: {err}")
-                                    else:
-                                        res2 = r.json()
-                                        saved = res2.get("data") if isinstance(res2, dict) and "data" in res2 else res2
-                                        st.success("Inserted Successfully!")
-                                        saved_display = dict(saved)
-                                        saved_display["phone_numbers"] = list_to_csv_str(saved_display.get("phone_numbers", []))
-                                        saved_display["social_links"] = list_to_csv_str(saved_display.get("social_links", []))
-                                        df2 = pd.DataFrame([saved_display]).drop(columns=["_id"], errors="ignore")
-                                        st.dataframe(df2, use_container_width=True)
-                                        st.download_button(
-                                            "📥 Download as Excel",
-                                            to_excel_bytes(df2),
-                                            "business_card.xlsx",
-                                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                                        )
-                                except Exception as e:
-                                    st.error(f"Failed to reach backend: {e}")
-                        else:
-                            st.warning("Backend returned success but no data payload.")
-                    else:
-                        if response is not None:
+                        if st.button("📥 Save extracted contact to DB"):
+                            payload = {
+                                "name": card.get("name"),
+                                "designation": card.get("designation"),
+                                "company": card.get("company"),
+                                "phone_numbers": card.get("phone_numbers") or [],
+                                "email": card.get("email"),
+                                "website": card.get("website"),
+                                "address": card.get("address"),
+                                "social_links": card.get("social_links") or [],
+                                "more_details": card.get("more_details") or "",
+                                "additional_notes": card.get("additional_notes") or "",
+                            }
                             try:
-                                err = response.json()
-                            except Exception:
-                                err = response.text
-                            st.error(f"Upload failed: {err}")
-                        else:
-                            st.error("Upload failed (no response).")
+                                headers = {"Authorization": f"Bearer {FRONTEND_OPENAI_KEY}"} if FRONTEND_OPENAI_KEY else {}
+                                r = requests.post(f"{BACKEND}/create_card", json=_clean_payload_for_backend(payload), headers=headers, timeout=30)
+                                if r.status_code >= 400:
+                                    try:
+                                        err = r.json()
+                                    except Exception:
+                                        err = r.text
+                                    st.error(f"Failed to create card: {err}")
+                                else:
+                                    res2 = r.json()
+                                    saved = res2.get("data") if isinstance(res2, dict) and "data" in res2 else res2
+                                    st.success("Inserted Successfully!")
+                                    saved_display = dict(saved)
+                                    saved_display["phone_numbers"] = list_to_csv_str(saved_display.get("phone_numbers", []))
+                                    saved_display["social_links"] = list_to_csv_str(saved_display.get("social_links", []))
+                                    df2 = pd.DataFrame([saved_display]).drop(columns=["_id"], errors="ignore")
+                                    st.dataframe(df2, use_container_width=True)
+                                    st.download_button(
+                                        "📥 Download as Excel",
+                                        to_excel_bytes(df2),
+                                        "business_card.xlsx",
+                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                    )
+                            except Exception as e:
+                                st.error(f"Failed to reach backend: {e}")
+                    else:
+                        st.warning("Backend returned success but no data payload.")
+                else:
+                    if response is not None:
+                        try:
+                            err = response.json()
+                        except Exception:
+                            err = response.text
+                        st.error(f"Upload failed: {err}")
+                    else:
+                        st.error("Upload failed (no response).")
             progress.progress(100)
 
     with col_preview:
@@ -264,7 +257,8 @@ with tab1:
             }
             with st.spinner("Saving..."):
                 try:
-                    r = requests.post(f"{BACKEND}/create_card", json=_clean_payload_for_backend(payload), timeout=30)
+                    headers = {"Authorization": f"Bearer {FRONTEND_OPENAI_KEY}"} if FRONTEND_OPENAI_KEY else {}
+                    r = requests.post(f"{BACKEND}/create_card", json=_clean_payload_for_backend(payload), headers=headers, timeout=30)
                     if r.status_code >= 400:
                         try:
                             err = r.json()
@@ -419,18 +413,25 @@ with tab2:
                     col_ok, col_del, col_close = st.columns([1,1,1])
                     with col_ok:
                         if st.button("Save changes", key=f"drawer-save-{id_str}"):
+                            # Convert comma-separated phone/social strings into lists (trim and drop empty)
+                            def _csv_to_list(s: str):
+                                if s is None:
+                                    return []
+                                return [x.strip() for x in str(s).split(",") if x.strip()]
+
                             payload = {
-                                "name": name_m,
-                                "designation": designation_m,
-                                "company": company_m,
-                                "phone_numbers": phones_m,
-                                "email": email_m,
-                                "website": website_m,
-                                "address": address_m,
-                                "social_links": social_m,
-                                "more_details": more_m,
-                                "additional_notes": notes_m,
+                                "name": name_m or None,
+                                "designation": designation_m or None,
+                                "company": company_m or None,
+                                "phone_numbers": _csv_to_list(phones_m),
+                                "email": email_m or None,
+                                "website": website_m or None,
+                                "address": address_m or None,
+                                "social_links": _csv_to_list(social_m),
+                                "more_details": more_m or None,
+                                "additional_notes": notes_m or None,
                             }
+
                             success, msg = patch_card(id_str, payload)
                             if success:
                                 st.success("Updated")
